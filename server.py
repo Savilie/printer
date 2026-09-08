@@ -31,6 +31,7 @@ class PrintRequest(BaseModel):
     qr: Optional[str] = None
     title: Optional[str] = None      # человекопонятная первая строка (артикул и т.п.)
     subtitle: Optional[str] = None   # вторая строка (заказ / откуда-куда)
+    lines: Optional[list] = None     # до 3 строк текста (id, бренд, артикул / «Коробка», код)
     printer: Optional[Literal["tlp100", "lp58", "both"]] = "both"
     printer_name: Optional[str] = None  # явное имя принтера (если нужно)
     copies: Optional[int] = 1
@@ -86,52 +87,94 @@ def _raw_printer(printer_name: str, data: bytes) -> bool:
 
 
 def _epl_escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")[:24]
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")[:40]
 
 
-def build_tlp100(qr_text: str, title: str, subtitle: str = "") -> bytes:
-    """EPL-этикетка TLP100 (50×30): QR компактный слева, одна строка текста.
+def _label_lines(qr_text: str, title: str, subtitle: str, lines) -> list:
+    """Нормализовать строки текста этикетки (без служебных префиксов).
 
-    Одна строка текста — ничего не наслаивается и не вылезает за метку.
+    Приоритет: явный lines → title+subtitle → сам qr (без *- / ID: / CHZ-BOX).
+    Возвращает максимум 3 строки.
     """
-    text = (title or qr_text).replace("*-", "").replace("ID:", "")[:16]
-    lines = []
-    lines.append("N")
-    lines.append("q400")
-    lines.append("Q300,24")
-    # QR компактнее (m1/s6), чтобы справа оставалось место под текст
-    lines.append(f'b20,15,Q,m1,s6,eL,"{_epl_escape(qr_text)}"')
-    lines.append(f'A170,180,1,2,1,1,N,"{_epl_escape(text)}"')
-    lines.append("P1")
-    return ("\r\n".join(lines) + "\r\n").encode("cp1251")
+    if lines:
+        raw = [str(x).strip() for x in lines if str(x).strip()]
+    else:
+        raw = [title or "", subtitle or ""]
+        raw = [x.strip() for x in raw if x.strip()]
+        if not raw:
+            raw = [qr_text]
+
+    out = []
+    for s in raw:
+        s = s.replace("*-", "").replace("ID:", "").strip()
+        if s:
+            out.append(s)
+    if not out:
+        out = [qr_text.replace("*-", "").replace("CHZ-BOX", "Коробка").strip() or qr_text]
+    return out[:3]
 
 
-def build_lp58(qr_text: str, title: str, subtitle: str = "") -> bytes:
-    """TSPL для LP58 EVA (58×40): QR слева, текст вертикально справа."""
-    lines = []
-    lines.append("SIZE 58 mm, 40 mm")
-    lines.append("GAP 2 mm, 0 mm")
-    lines.append("CLS")
-    t = (title or qr_text).replace("ID:", "").replace("*-", "")[:24]
-    lines.append(f'TEXT 380,180,"3",90,1,1,"{t}"')
-    lines.append(f'QRCODE 30,16,H,13,A,0,M2,S7,"{qr_text[:80]}"')
-    lines.append("PRINT 1")
-    return ("\r\n".join(lines) + "\r\n").encode("ascii", errors="replace")
+def build_tlp100(qr_text: str, title: str = "", subtitle: str = "", lines=None) -> bytes:
+    """EPL-этикетка TLP100 (50×30): крупный QR слева, до 3 строк текста справа.
+
+    QR крупный (m2/s13) как раньше. Текст — три отдельных ряда в правой
+    колонке (x после QR), прижаты к верху (в EPL2 y растёт от нижнего края;
+    верх метки = 300). Каждая строка обрезается под ширину колонки, поэтому
+    ничего не вылезает за правый край и не наслаивается.
+    """
+    texts = _label_lines(qr_text, title, subtitle, lines)
+    rows = []
+    # Правая колонка: в v1.0 текст стоял на x=320 — гарантированно правее QR m2/s13
+    x_text = 320
+    # y от нижнего края (EPL2, верх = 300): строки прижаты к верху
+    positions = [(285, 2, 8), (245, 1, 16), (210, 1, 16)]  # (y, шрифт, лимит симв)
+    for i, t in enumerate(texts):
+        y, font, limit = positions[i]
+        rows.append(f'A{x_text},{y},0,{font},1,1,N,"{_epl_escape(t[:limit])}"')
+    epl = []
+    epl.append("N")
+    epl.append("q400")
+    epl.append("Q300,24")
+    # QR крупный — как в исходной рабочей версии (m2/s13)
+    epl.append(f'b20,15,Q,m2,s13,eL,"{_epl_escape(qr_text)}"')
+    epl.extend(rows)
+    epl.append("P1")
+    return ("\r\n".join(epl) + "\r\n").encode("cp1251")
 
 
-def print_tlp100(qr_text: str, title: str, subtitle: str = "", printer_name: str = "MPRINT Terra Nova TLP100", copies: int = 1) -> bool:
+def build_lp58(qr_text: str, title: str = "", subtitle: str = "", lines=None) -> bytes:
+    """TSPL для LP58 EVA (58×40): QR слева, до 3 строк текста справа."""
+    texts = _label_lines(qr_text, title, subtitle, lines)
+    lines_cmd = []
+    lines_cmd.append("SIZE 58 mm, 40 mm")
+    lines_cmd.append("GAP 2 mm, 0 mm")
+    lines_cmd.append("CLS")
+    y_first = 90
+    y_step = 42
+    for i, t in enumerate(texts):
+        if i == 0:
+            lines_cmd.append(f'TEXT 280,{y_first},"3",0,1,1,"{t[:18]}"')
+        else:
+            lines_cmd.append(f'TEXT 280,{y_first + i * y_step},"1",0,1,1,"{t[:24]}"')
+    lines_cmd.append(f'QRCODE 30,20,H,13,A,0,M2,S7,"{qr_text[:80]}"')
+    lines_cmd.append("PRINT 1")
+    # TSPL-принтеры с русским шрифтом обычно работают в cp866
+    return ("\r\n".join(lines_cmd) + "\r\n").encode("cp866", errors="replace")
+
+
+def print_tlp100(qr_text: str, title: str = "", subtitle: str = "", printer_name: str = "MPRINT Terra Nova TLP100", copies: int = 1, lines=None) -> bool:
     ok = True
     for _ in range(max(1, copies)):
-        if not _raw_printer(printer_name, build_tlp100(qr_text, title, subtitle)):
+        if not _raw_printer(printer_name, build_tlp100(qr_text, title, subtitle, lines)):
             ok = False
     print(f"📨 TLP100 ×{copies}: {qr_text}")
     return ok
 
 
-def print_lp58(qr_text: str, title: str, subtitle: str = "", printer_name: str = "MPRINT LP58 EVA", copies: int = 1) -> bool:
+def print_lp58(qr_text: str, title: str = "", subtitle: str = "", printer_name: str = "MPRINT LP58 EVA", copies: int = 1, lines=None) -> bool:
     ok = True
     for _ in range(max(1, copies)):
-        if not _raw_printer(printer_name, build_lp58(qr_text, title, subtitle)):
+        if not _raw_printer(printer_name, build_lp58(qr_text, title, subtitle, lines)):
             ok = False
     print(f"📨 LP58 ×{copies}: {qr_text}")
     return ok
@@ -171,18 +214,18 @@ def print_label(req: PrintRequest):
     if not qr_text:
         raise HTTPException(400, "Нет данных для печати (qr/id)")
 
-    # Надпись на этикетке без служебных префиксов
-    raw = req.title or qr_text
-    title = raw.replace("*-", "").replace("ID:", "").replace("CHZ-BOX", "Коробка " + raw.replace("CHZ-BOX", "")) if raw == qr_text and raw.startswith("CHZ-BOX") else raw.replace("*-", "").replace("ID:", "")
+    # Надпись на этикетке без служебных префиксов (теперь можно слать готовые lines)
+    title = (req.title or "").replace("*-", "").replace("ID:", "")
     subtitle = req.subtitle or ""
+    lines = req.lines or None
 
     results = {}
     tlp_name = resolve_printer("tlp100", req.printer_name)
     lp_name = resolve_printer("lp58", req.printer_name)
     if req.printer in ("tlp100", "both") and tlp_name:
-        results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1)
+        results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1, lines=lines)
     if req.printer in ("lp58", "both") and lp_name:
-        results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1)
+        results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1, lines=lines)
     if not results:
         results["error"] = "Физический принтер не найден"
     ok = bool(results) and all(results.values())

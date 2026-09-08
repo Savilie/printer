@@ -271,15 +271,52 @@
         </h1>
         <div class="subtitle">Отправка этикеток на принтеры ПВЗ</div>
 
-        <!-- ID товара -->
+        <!-- Тип этикетки -->
         <div class="form-group">
-            <label for="productId">🔢 ID товара</label>
-            <input
-                type="text"
-                id="productId"
-                placeholder="Введите ID, например 12345"
-                value="12345"
-            />
+            <label>🏷️ Тип этикетки</label>
+            <div class="printer-selector" id="labelTypeSelector">
+                <button class="active" data-type="goods">
+                    <span class="icon">📦</span>
+                    Товар
+                </button>
+                <button data-type="box">
+                    <span class="icon">📋</span>
+                    Коробка
+                </button>
+            </div>
+        </div>
+
+        <!-- Поля товара -->
+        <div id="goodsFields">
+            <div class="form-group">
+                <label for="productId">🔢 ID товара</label>
+                <input
+                    type="text"
+                    id="productId"
+                    placeholder="Введите ID, например 12345"
+                    value="12345"
+                />
+            </div>
+            <div class="form-group">
+                <label for="goodsBrand">🏭 Бренд</label>
+                <input type="text" id="goodsBrand" placeholder="Например BOSCH" value="BOSCH" />
+            </div>
+            <div class="form-group">
+                <label for="goodsArticle">🔩 Артикул</label>
+                <input type="text" id="goodsArticle" placeholder="Например 0001106014" value="0001106014" />
+            </div>
+        </div>
+
+        <!-- Поля коробки -->
+        <div id="boxFields" style="display:none">
+            <div class="form-group">
+                <label for="boxCode">📦 Код коробки</label>
+                <input type="text" id="boxCode" placeholder="CHZ-BOX-XXXXXXXX" value="CHZ-BOX-AB896D9F" />
+            </div>
+            <div class="form-group">
+                <label for="boxDest">📍 Куда</label>
+                <input type="text" id="boxDest" placeholder="Например ПВЗ Чернухино" value="ПВЗ Чернухино" />
+            </div>
         </div>
 
         <!-- Выбор принтера -->
@@ -322,13 +359,34 @@
     <script>
         const SERVER_URL = 'http://localhost:5000';
         let selectedPrinter = 'both';
+        let selectedLabelType = 'goods';
 
         // --- DOM элементы ---
         const productInput = document.getElementById('productId');
+        const goodsBrandInput = document.getElementById('goodsBrand');
+        const goodsArticleInput = document.getElementById('goodsArticle');
+        const boxCodeInput = document.getElementById('boxCode');
+        const boxDestInput = document.getElementById('boxDest');
         const printBtn = document.getElementById('printBtn');
         const statusDiv = document.getElementById('statusMessage');
         const statusText = document.getElementById('statusText');
         const printersStatus = document.getElementById('printersStatus');
+
+        // --- Выбор типа этикетки ---
+        function setLabelType(type) {
+            selectedLabelType = type;
+            document.querySelectorAll('#labelTypeSelector button').forEach(b => {
+                const active = b.dataset.type === type;
+                b.classList.toggle('active', active);
+            });
+            document.getElementById('goodsFields').style.display = type === 'goods' ? '' : 'none';
+            document.getElementById('boxFields').style.display = type === 'box' ? '' : 'none';
+        }
+        document.querySelectorAll('#labelTypeSelector button').forEach(btn => {
+            btn.addEventListener('click', function() {
+                setLabelType(this.dataset.type);
+            });
+        });
 
         // --- Выбор принтера ---
         document.querySelectorAll('#printerSelector button').forEach(btn => {
@@ -394,10 +452,22 @@
 
         // --- Печать ---
         async function printLabel() {
-            const productId = productInput.value.trim();
-            if (!productId) {
-                showStatus('❌ Введите ID товара', 'error');
-                return;
+            let qrText, lines, printerHint = selectedPrinter;
+            if (selectedLabelType === 'box') {
+                const code = boxCodeInput.value.trim();
+                if (!code) { showStatus('❌ Введите код коробки', 'error'); return; }
+                qrText = code;
+                lines = ['Коробка', code.replace('CHZ-BOX', '').replace(/^[- ]+/, ''), boxDestInput.value.trim() || ''];
+                // Коробки обычно на LP58, но оставляем выбор пользователя
+            } else {
+                const id = productInput.value.trim();
+                if (!id) { showStatus('❌ Введите ID товара', 'error'); return; }
+                qrText = `*-${id}`;
+                lines = [
+                    id,
+                    goodsBrandInput.value.trim(),
+                    goodsArticleInput.value.trim(),
+                ];
             }
 
             printBtn.disabled = true;
@@ -410,8 +480,9 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        id: productId,
-                        printer: selectedPrinter
+                        qr: qrText,
+                        lines: lines,
+                        printer: selectedPrinter,
                     })
                 });
 
