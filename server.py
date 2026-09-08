@@ -115,22 +115,33 @@ def _label_lines(qr_text: str, title: str, subtitle: str, lines) -> list:
 
 
 def build_tlp100(qr_text: str, title: str = "", subtitle: str = "", lines=None) -> bytes:
-    """EPL-этикетка TLP100 (50×30): крупный QR слева, до 3 строк текста справа.
+    """EPL-этикетка TLP100 (50×30): крупный QR слева, текст вертикально (90°) справа.
 
-    QR крупный (m2/s13) как раньше. Текст — три отдельных ряда в правой
-    колонке (x после QR), прижаты к верху (в EPL2 y растёт от нижнего края;
-    верх метки = 300). Каждая строка обрезается под ширину колонки, поэтому
-    ничего не вылезает за правый край и не наслаивается.
+    QR крупный (m2/s13). Строки текста печатаются повёрнутыми на 90° вдоль
+    правого края, прижаты к верху метки, шрифт 2. Позиции считаются по длине
+    строк снизу вверх, чтобы строки не пересекались и не вылезали.
     """
     texts = _label_lines(qr_text, title, subtitle, lines)
     rows = []
-    # Правая колонка: в v1.0 текст стоял на x=320 — гарантированно правее QR m2/s13
-    x_text = 320
-    # y от нижнего края (EPL2, верх = 300): строки прижаты к верху
-    positions = [(285, 2, 8), (245, 1, 16), (210, 1, 16)]  # (y, шрифт, лимит симв)
-    for i, t in enumerate(texts):
-        y, font, limit = positions[i]
-        rows.append(f'A{x_text},{y},0,{font},1,1,N,"{_epl_escape(t[:limit])}"')
+    x_text = 330
+    # Вертикальный текст (rotation=1): буквы идут вверх от y (y = низ строки).
+    # Строки кладём снизу вверх: texts[-1] (артикул/КУДА) внизу, texts[0] (id/«Коробка») сверху.
+    limit = 13
+    lengths = [max(1, len(t[:limit])) for t in texts]
+    total_len = sum(lengths)
+    gap = 12
+    gaps_total = gap * max(0, len(texts) - 1)
+    # Шаг по вертикали = ширина символа font2 (~10-11). Если длинное «Куда» не
+    # влезает в высоту 300 — чуть уменьшаем шаг, но не мельче 8.
+    W = max(8, min(11, int((288 - gaps_total) / max(total_len, 1))))
+    heights = [l * W for l in lengths]
+    total_h = sum(heights) + gaps_total
+    y_cur = 292 - total_h  # прижать колонку к верху метки (300)
+    if y_cur < 12:
+        y_cur = 12
+    for i, t in enumerate(reversed(texts)):
+        rows.append(f'A{x_text},{y_cur},1,2,1,1,N,"{_epl_escape(t[:limit])}"')
+        y_cur += heights[len(texts) - 1 - i] + gap
     epl = []
     epl.append("N")
     epl.append("q400")
