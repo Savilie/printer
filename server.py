@@ -70,7 +70,8 @@ def build_tlp100(qr_text: str, title: str, subtitle: str = "") -> bytes:
     if subtitle:
         lines.append(f'A320,90,1,1,1,1,N,"{_epl_escape(subtitle)}"')
     lines.append("P1")
-    return "\n".join(lines).encode("cp1251")
+    # EPL требует CR/LF после каждой команды и перевод строки в конце задания
+    return ("\r\n".join(lines) + "\r\n").encode("cp1251")
 
 
 def build_lp58(qr_text: str, title: str, subtitle: str = "") -> bytes:
@@ -83,7 +84,7 @@ def build_lp58(qr_text: str, title: str, subtitle: str = "") -> bytes:
     lines.append(f'TEXT 380,180,"3",90,1,1,"{t}"')
     lines.append(f'QRCODE 30,16,H,13,A,0,M2,S7,"{qr_text[:80]}"')
     lines.append("PRINT 1")
-    return "\n".join(lines).encode("ascii", errors="replace")
+    return ("\r\n".join(lines) + "\r\n").encode("ascii", errors="replace")
 
 
 def print_tlp100(qr_text: str, title: str, subtitle: str = "", printer_name: str = "MPRINT Terra Nova TLP100", copies: int = 1) -> bool:
@@ -102,6 +103,18 @@ def print_lp58(qr_text: str, title: str, subtitle: str = "", printer_name: str =
             ok = False
     print(f"📨 LP58 ×{copies}: {qr_text}")
     return ok
+
+
+@app.get("/")
+def root():
+    import os
+    import sys
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "index.html")
+    if os.path.exists(path):
+        return __import__("fastapi.responses", fromlist=["HTMLResponse"]).HTMLResponse(
+            open(path, encoding="utf-8").read())
+    return {"ok": True, "hint": "index.html не найден рядом с printer-server"}
 
 
 @app.get("/ping")

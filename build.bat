@@ -6,6 +6,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller
 
 python -m PyInstaller --noconfirm --onefile --name printer-server ^
+  --add-data "index.html;." ^
   --hidden-import uvicorn.logging ^
   --hidden-import uvicorn.loops ^
   --hidden-import uvicorn.loops.auto ^
