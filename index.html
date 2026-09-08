@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Печать QR-кодов</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background: #f0f2f5;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            transition: all 0.3s ease;
+        }
+
+        h1 {
+            font-size: 26px;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        h1 .badge {
+            font-size: 14px;
+            font-weight: 500;
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 2px 12px;
+            border-radius: 20px;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-size: 14px;
+            margin-bottom: 28px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            font-size: 14px;
+            color: #374151;
+            margin-bottom: 6px;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            background: #fafafa;
+            outline: none;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+            background: #ffffff;
+        }
+
+        .form-group input::placeholder {
+            color: #9ca3af;
+        }
+
+        .printer-selector {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .printer-selector button {
+            padding: 12px 0;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            background: #fafafa;
+            font-size: 14px;
+            font-weight: 600;
+            color: #374151;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .printer-selector button:hover {
+            background: #f3f4f6;
+            border-color: #9ca3af;
+        }
+
+        .printer-selector button.active {
+            border-color: #4f46e5;
+            background: #eef2ff;
+            color: #4f46e5;
+        }
+
+        .printer-selector button .icon {
+            display: block;
+            font-size: 20px;
+            margin-bottom: 2px;
+        }
+
+        .btn-print {
+            width: 100%;
+            padding: 14px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.25s;
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-print:hover {
+            background: #4338ca;
+            transform: translateY(-1px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.35);
+        }
+
+        .btn-print:active {
+            transform: scale(0.98);
+        }
+
+        .btn-print:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 14px 18px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status.show {
+            display: flex;
+        }
+
+        .status.success {
+            background: #ecfdf5;
+            color: #065f46;
+            border: 1px solid #a7f3d0;
+        }
+
+        .status.error {
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+
+        .status.info {
+            background: #eff6ff;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+        }
+
+        .status .spinner {
+            width: 18px;
+            height: 18px;
+            border: 3px solid #d1d5db;
+            border-top-color: #4f46e5;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .footer {
+            margin-top: 24px;
+            text-align: center;
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        .footer a {
+            color: #4f46e5;
+            text-decoration: none;
+        }
+
+        .printers-status {
+            font-size: 13px;
+            color: #6b7280;
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .printers-status .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 2px;
+        }
+
+        .dot.green {
+            background: #22c55e;
+        }
+        .dot.red {
+            background: #ef4444;
+        }
+        .dot.gray {
+            background: #9ca3af;
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 24px;
+            }
+            .printer-selector {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>
+            🖨️ Печать QR
+            <span class="badge" id="statusBadge">● Онлайн</span>
+        </h1>
+        <div class="subtitle">Отправка этикеток на принтеры ПВЗ</div>
+
+        <!-- ID товара -->
+        <div class="form-group">
+            <label for="productId">🔢 ID товара</label>
+            <input
+                type="text"
+                id="productId"
+                placeholder="Введите ID, например 12345"
+                value="12345"
+            />
+        </div>
+
+        <!-- Выбор принтера -->
+        <div class="form-group">
+            <label>🖨️ Выберите принтер</label>
+            <div class="printer-selector" id="printerSelector">
+                <button class="active" data-printer="both">
+                    <span class="icon">📋</span>
+                    Оба
+                </button>
+                <button data-printer="tlp100">
+                    <span class="icon">📠</span>
+                    TLP100
+                </button>
+                <button data-printer="lp58">
+                    <span class="icon">🧾</span>
+                    LP58
+                </button>
+            </div>
+            <div class="printers-status" id="printersStatus">
+                <span>⏳ Проверка принтеров...</span>
+            </div>
+        </div>
+
+        <!-- Кнопка печати -->
+        <button class="btn-print" id="printBtn">
+            🖨️ Напечатать
+        </button>
+
+        <!-- Статус -->
+        <div class="status" id="statusMessage">
+            <span id="statusText"></span>
+        </div>
+
+        <div class="footer">
+            Сервер: <span id="serverUrl">http://localhost:5000</span>
+        </div>
+    </div>
+
+    <script>
+        const SERVER_URL = 'http://localhost:5000';
+        let selectedPrinter = 'both';
+
+        // --- DOM элементы ---
+        const productInput = document.getElementById('productId');
+        const printBtn = document.getElementById('printBtn');
+        const statusDiv = document.getElementById('statusMessage');
+        const statusText = document.getElementById('statusText');
+        const printersStatus = document.getElementById('printersStatus');
+
+        // --- Выбор принтера ---
+        document.querySelectorAll('#printerSelector button').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('#printerSelector button').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                selectedPrinter = this.dataset.printer;
+            });
+        });
+
+        // --- Показ статуса ---
+        function showStatus(message, type = 'info') {
+            statusDiv.className = 'status show ' + type;
+            statusText.textContent = message;
+        }
+
+        function hideStatus() {
+            statusDiv.className = 'status';
+        }
+
+        // --- Проверка сервера и принтеров ---
+        async function checkStatus() {
+            try {
+                const resp = await fetch(`${SERVER_URL}/ping`);
+                if (resp.ok) {
+                    document.getElementById('statusBadge').textContent = '● Онлайн';
+                    document.getElementById('statusBadge').style.color = '#2e7d32';
+                    await checkPrinters();
+                } else {
+                    throw new Error('Сервер недоступен');
+                }
+            } catch (e) {
+                document.getElementById('statusBadge').textContent = '● Офлайн';
+                document.getElementById('statusBadge').style.color = '#dc2626';
+                printersStatus.innerHTML = '❌ Сервер не отвечает';
+                printBtn.disabled = true;
+            }
+        }
+
+        async function checkPrinters() {
+            try {
+                const resp = await fetch(`${SERVER_URL}/printers`);
+                const data = await resp.json();
+                if (data.printers && data.printers.length > 0) {
+                    const list = data.printers.map(p => {
+                        const isTlp = p.includes('TLP100') || p.includes('Terra Nova');
+                        const isLp = p.includes('LP58') || p.includes('EVA');
+                        let dot = 'gray';
+                        if (isTlp || isLp) dot = 'green';
+                        return `<span><span class="dot ${dot}"></span>${p}</span>`;
+                    }).join(' ');
+                    printersStatus.innerHTML = '🖨️ ' + list;
+                    printBtn.disabled = false;
+                } else {
+                    printersStatus.innerHTML = '⚠️ Принтеры не найдены';
+                    printBtn.disabled = true;
+                }
+            } catch (e) {
+                printersStatus.innerHTML = '❌ Не удалось получить список принтеров';
+                printBtn.disabled = true;
+            }
+        }
+
+        // --- Печать ---
+        async function printLabel() {
+            const productId = productInput.value.trim();
+            if (!productId) {
+                showStatus('❌ Введите ID товара', 'error');
+                return;
+            }
+
+            printBtn.disabled = true;
+            printBtn.innerHTML = '⏳ Печать...';
+            hideStatus();
+            showStatus('⏳ Отправка запроса...', 'info');
+
+            try {
+                const resp = await fetch(`${SERVER_URL}/print`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: productId,
+                        printer: selectedPrinter
+                    })
+                });
+
+                const data = await resp.json();
+
+                if (resp.ok) {
+                    showStatus(`✅ ${data.message || 'Печать выполнена успешно!'}`, 'success');
+                } else {
+                    showStatus(`❌ ${data.detail || data.error || 'Ошибка печати'}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`❌ Ошибка соединения с сервером: ${error.message}`, 'error');
+            } finally {
+                printBtn.disabled = false;
+                printBtn.innerHTML = '🖨️ Напечатать';
+            }
+        }
+
+        // --- Обработчики ---
+        printBtn.addEventListener('click', printLabel);
+
+        productInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') printLabel();
+        });
+
+        // --- Запуск ---
+        checkStatus();
+
+        // Проверяем статус каждые 30 секунд
+        setInterval(checkStatus, 30000);
+    </script>
+
+</body>
+</html>
