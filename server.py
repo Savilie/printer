@@ -32,7 +32,39 @@ class PrintRequest(BaseModel):
     title: Optional[str] = None      # человекопонятная первая строка (артикул и т.п.)
     subtitle: Optional[str] = None   # вторая строка (заказ / откуда-куда)
     printer: Optional[Literal["tlp100", "lp58", "both"]] = "both"
+    printer_name: Optional[str] = None  # явное имя принтера (если нужно)
     copies: Optional[int] = 1
+
+
+def _all_printers() -> list:
+    names = []
+    try:
+        for p in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS):
+            names.append(p[2])
+    except Exception as e:
+        print("EnumPrinters error:", e)
+    return names
+
+
+def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
+    """Найти подходящий принтер: TLP100 если есть, иначе другой физический.
+
+    Возвращает '' если физических принтеров нет (только PDF/XPS и т.п.).
+    """
+    names = _all_printers()
+    if explicit and explicit in names:
+        return explicit
+    virtual = ("XPS", "PDF", "Fax", "OneNote", "Generic", "ABBYY", "FineReader")
+    physical = [n for n in names if not any(v.lower() in n.lower() for v in virtual)]
+
+    def has(needle):
+        return [n for n in physical if needle.lower() in n.lower()]
+
+    if kind == "tlp100":
+        prefs = (has("TLP100") and [n for n in has("TLP100") if "- ZPL" not in n]) or has("TLP100") or has("LP58") or physical
+    else:  # lp58
+        prefs = has("LP58") or has("TLP100") or physical
+    return prefs[0] if prefs else ""
 
 
 def _raw_printer(printer_name: str, data: bytes) -> bool:
@@ -54,23 +86,23 @@ def _raw_printer(printer_name: str, data: bytes) -> bool:
 
 
 def _epl_escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")[:60]
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")[:24]
 
 
 def build_tlp100(qr_text: str, title: str, subtitle: str = "") -> bytes:
-    """EPL-этикетка для TLP100 (50×30): QR слева, текст справа."""
+    """EPL-этикетка TLP100 (50×30): QR компактный слева, одна строка текста.
+
+    Одна строка текста — ничего не наслаивается и не вылезает за метку.
+    """
+    text = (title or qr_text).replace("*-", "").replace("ID:", "")[:16]
     lines = []
     lines.append("N")
     lines.append("q400")
     lines.append("Q300,24")
-    # QR-код (слева)
-    lines.append(f'b20,15,Q,m2,s13,eL,"{_epl_escape(qr_text)}"')
-    # Правая колонка: первая строка крупно
-    lines.append(f'A320,150,1,2,1,1,N,"{_epl_escape(title)}"')
-    if subtitle:
-        lines.append(f'A320,90,1,1,1,1,N,"{_epl_escape(subtitle)}"')
+    # QR компактнее (m1/s6), чтобы справа оставалось место под текст
+    lines.append(f'b20,15,Q,m1,s6,eL,"{_epl_escape(qr_text)}"')
+    lines.append(f'A170,180,1,2,1,1,N,"{_epl_escape(text)}"')
     lines.append("P1")
-    # EPL требует CR/LF после каждой команды и перевод строки в конце задания
     return ("\r\n".join(lines) + "\r\n").encode("cp1251")
 
 
@@ -145,12 +177,16 @@ def print_label(req: PrintRequest):
     subtitle = req.subtitle or ""
 
     results = {}
-    if req.printer in ("tlp100", "both"):
-        results["tlp100"] = print_tlp100(qr_text, title, subtitle, copies=req.copies or 1)
-    if req.printer in ("lp58", "both"):
-        results["lp58"] = print_lp58(qr_text, title, subtitle, copies=req.copies or 1)
+    tlp_name = resolve_printer("tlp100", req.printer_name)
+    lp_name = resolve_printer("lp58", req.printer_name)
+    if req.printer in ("tlp100", "both") and tlp_name:
+        results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1)
+    if req.printer in ("lp58", "both") and lp_name:
+        results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1)
+    if not results:
+        results["error"] = "Физический принтер не найден"
     ok = bool(results) and all(results.values())
-    return {"ok": ok, "results": results, "qr": qr_text}
+    return {"ok": ok, "results": results, "qr": qr_text, "printer_tlp100": tlp_name, "printer_lp58": lp_name}
 
 
 if __name__ == "__main__":
