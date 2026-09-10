@@ -430,13 +430,20 @@
             try {
                 const resp = await fetch(`${SERVER_URL}/printers`);
                 const data = await resp.json();
-                if (data.printers && data.printers.length > 0) {
-                    const list = data.printers.map(p => {
-                        const isTlp = p.includes('TLP100') || p.includes('Terra Nova');
-                        const isLp = p.includes('LP58') || p.includes('EVA');
+                const details = data.details || (data.printers || []).map(n => ({ name: n, port: '', file_port: false }));
+                if (details.length > 0) {
+                    const list = details.map(p => {
+                        const isTlp = p.name.includes('TLP100') || p.name.includes('Terra Nova');
+                        const isLp = p.name.includes('LP58') || p.name.includes('EVA');
+                        // «печать в файл» и виртуальные принтеры помечаем красным
+                        const isVirtual = /pdf|xps|fax|onenote|abbyy|finereader|generic/i.test(p.name);
                         let dot = 'gray';
                         if (isTlp || isLp) dot = 'green';
-                        return `<span><span class="dot ${dot}"></span>${p}</span>`;
+                        if (p.file_port || isVirtual) dot = 'red';
+                        const tail = p.file_port
+                            ? ` <b style="color:#dc2626">[${p.port || 'файл'} — печать в файл!]</b>`
+                            : (p.port ? ` [${p.port}]` : '');
+                        return `<span><span class="dot ${dot}"></span>${p.name}${tail}</span>`;
                     }).join(' ');
                     printersStatus.innerHTML = '🖨️ ' + list;
                     printBtn.disabled = false;

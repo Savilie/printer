@@ -47,16 +47,79 @@ def _all_printers() -> list:
     return names
 
 
-def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
-    """Найти подходящий принтер: TLP100 если есть, иначе другой физический.
+# Порты «печати в файл»: задание уходит в .prn/.txt, а не на принтер.
+_FILE_PORTS = ("file:", "portprompt:", "nul", "null")
 
-    Возвращает '' если физических принтеров нет (только PDF/XPS и т.п.).
+
+def _is_file_port(port: str) -> bool:
+    p = (port or "").strip().lower()
+    return p.startswith("file") or p.startswith("portprompt") or p in ("nul", "null")
+
+
+def _printer_details(name: str) -> dict:
+    """Имя/порт/драйвер принтера (win32print.GetPrinter level 2). {} если недоступно."""
+    try:
+        h = win32print.OpenPrinter(name)
+    except Exception:
+        return {}
+    try:
+        info = win32print.GetPrinter(h, 2) or {}
+        return {
+            "name": info.get("pPrinterName", name) or name,
+            "port": info.get("pPortName", "") or "",
+            "driver": info.get("pDriverName", "") or "",
+        }
+    except Exception:
+        return {}
+    finally:
+        try:
+            win32print.ClosePrinter(h)
+        except Exception:
+            pass
+
+
+def _printers_report() -> list:
+    """Список принтеров с портом/драйвером + флагом «печать в файл»."""
+    out = []
+    for n in _all_printers():
+        det = _printer_details(n)
+        port = det.get("port", "")
+        out.append({
+            "name": n,
+            "port": port,
+            "driver": det.get("driver", ""),
+            "file_port": _is_file_port(port),
+        })
+    return out
+
+
+def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
+    """Найти подходящий физический принтер: TLP100 если есть, иначе LP58, иначе любой.
+
+    Исключаются виртуальные принтеры (XPS/PDF/Fax/OneNote/...) и принтеры с портом
+    печати В ФАЙЛ (FILE:/PORTPROMPT:) — иначе задание «печатается» в label.prn
+    и на бумагу ничего не выходит.
+
+    Возвращает '' если физических принтеров нет.
     """
     names = _all_printers()
     if explicit and explicit in names:
         return explicit
     virtual = ("XPS", "PDF", "Fax", "OneNote", "Generic", "ABBYY", "FineReader")
-    physical = [n for n in names if not any(v.lower() in n.lower() for v in virtual)]
+
+    physical, skipped = [], []
+    for n in names:
+        if any(v.lower() in n.lower() for v in virtual):
+            continue
+        det = _printer_details(n)
+        port = det.get("port", "")
+        if _is_file_port(port):
+            skipped.append(f"{n} [{port or '?'}]")
+            continue
+        physical.append(n)
+
+    if skipped:
+        print("⚠ Пропущены (печать в файл): " + "; ".join(skipped))
 
     def has(needle):
         return [n for n in physical if needle.lower() in n.lower()]
@@ -65,6 +128,9 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
         prefs = (has("TLP100") and [n for n in has("TLP100") if "- ZPL" not in n]) or has("TLP100") or has("LP58") or physical
     else:  # lp58
         prefs = has("LP58") or has("TLP100") or physical
+    if not prefs:
+        print("⚠ Физический принтер не найден. Доступные: " + ("; ".join(
+            f"{p['name']} [{p['port'] or '?'}]" for p in _printers_report()) or "нет"))
     return prefs[0] if prefs else ""
 
 
@@ -171,7 +237,7 @@ def print_tlp100(qr_text: str, title: str = "", subtitle: str = "", printer_name
     for _ in range(max(1, copies)):
         if not _raw_printer(printer_name, build_tlp100(qr_text, title, subtitle, lines)):
             ok = False
-    print(f"📨 TLP100 ×{copies}: {qr_text}")
+    print(f"📨 TLP100 [{printer_name}] ×{copies}: {qr_text}")
     return ok
 
 
@@ -180,7 +246,7 @@ def print_lp58(qr_text: str, title: str = "", subtitle: str = "", printer_name: 
     for _ in range(max(1, copies)):
         if not _raw_printer(printer_name, build_lp58(qr_text, title, subtitle, lines)):
             ok = False
-    print(f"📨 LP58 ×{copies}: {qr_text}")
+    print(f"📨 LP58 [{printer_name}] ×{copies}: {qr_text}")
     return ok
 
 
@@ -203,13 +269,11 @@ def ping():
 
 @app.get("/printers")
 def printers():
-    names = []
     try:
-        for p in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS):
-            names.append(p[2])
+        det = _printers_report()
     except Exception as e:
         return {"printers": [], "error": str(e)}
-    return {"printers": names}
+    return {"printers": [d["name"] for d in det], "details": det}
 
 
 @app.post("/print")
@@ -231,9 +295,14 @@ def print_label(req: PrintRequest):
     if req.printer in ("lp58", "both") and lp_name:
         results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1, lines=lines)
     if not results:
-        results["error"] = "Физический принтер не найден"
+        results["error"] = "Физический принтер не найден (есть только виртуальные или печать в файл)"
+        print("⚠ Нечего печатать. Принтеры: " + ("; ".join(
+            f"{d['name']} [{d['port'] or '?'}]" + (" (ФАЙЛ)" if d["file_port"] else "")
+            for d in _printers_report()) or "нет"))
     ok = bool(results) and all(results.values())
-    return {"ok": ok, "results": results, "qr": qr_text, "printer_tlp100": tlp_name, "printer_lp58": lp_name}
+    return {"ok": ok, "results": results, "qr": qr_text,
+            "printer_tlp100": tlp_name, "printer_lp58": lp_name,
+            "printers": _printers_report()}
 
 
 if __name__ == "__main__":
