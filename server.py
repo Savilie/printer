@@ -113,63 +113,56 @@ def _label_lines(qr_text: str, title: str, subtitle: str, lines) -> list:
         out = [qr_text.replace("*-", "").replace("CHZ-BOX", "Коробка").strip() or qr_text]
     return out[:3]
 
+def _qr_cell_size(data_len: int) -> int:
+    if data_len <= 8:
+        return 7
+    elif data_len <= 14:
+        return 5
+    elif data_len <= 20:
+        return 4
+    else:
+        return 3
+
+
+def _qr_ecc_level(data_len: int) -> str:
+    return "H" if data_len <= 10 else "M"
 
 def build_tlp100(qr_text: str, title: str = "", subtitle: str = "", lines=None) -> bytes:
-    """EPL-этикетка TLP100 (50×30): крупный QR слева, текст вертикально (90°) справа.
-
-    QR крупный (m2/s13). Строки текста печатаются повёрнутыми на 90° вдоль
-    правого края, прижаты к верху метки, шрифт 2. Позиции считаются по длине
-    строк снизу вверх, чтобы строки не пересекались и не вылезали.
-    """
     texts = _label_lines(qr_text, title, subtitle, lines)
+    limit = 17
+    col_step = 18
+    x_start = 330
+    y_base = 15      # было 292 — теперь якорь у верхнего края, текст растёт ВНИЗ
+
     rows = []
-    x_text = 330
-    # Вертикальный текст (rotation=1): буквы идут вверх от y (y = низ строки).
-    # Строки кладём снизу вверх: texts[-1] (артикул/КУДА) внизу, texts[0] (id/«Коробка») сверху.
-    limit = 13
-    lengths = [max(1, len(t[:limit])) for t in texts]
-    total_len = sum(lengths)
-    gap = 12
-    gaps_total = gap * max(0, len(texts) - 1)
-    # Шаг по вертикали = ширина символа font2 (~10-11). Если длинное «Куда» не
-    # влезает в высоту 300 — чуть уменьшаем шаг, но не мельче 8.
-    W = max(8, min(11, int((288 - gaps_total) / max(total_len, 1))))
-    heights = [l * W for l in lengths]
-    total_h = sum(heights) + gaps_total
-    y_cur = 292 - total_h  # прижать колонку к верху метки (300)
-    if y_cur < 12:
-        y_cur = 12
-    for i, t in enumerate(reversed(texts)):
-        rows.append(f'A{x_text},{y_cur},1,2,1,1,N,"{_epl_escape(t[:limit])}"')
-        y_cur += heights[len(texts) - 1 - i] + gap
-    epl = []
-    epl.append("N")
-    epl.append("q400")
-    epl.append("Q300,24")
-    # QR крупный — как в исходной рабочей версии (m2/s13)
-    epl.append(f'b20,15,Q,m2,s13,eL,"{_epl_escape(qr_text)}"')
+    for i, t in enumerate(texts):
+        x = x_start + i * col_step
+        rows.append(f'A{x},{y_base},1,2,1,1,N,"{_epl_escape(t[:limit])}"')
+
+    epl = ["N", "q400", "Q300,24",
+           f'b20,15,Q,m2,s13,eL,"{_epl_escape(qr_text)}"']
     epl.extend(rows)
     epl.append("P1")
     return ("\r\n".join(epl) + "\r\n").encode("cp1251")
 
 
 def build_lp58(qr_text: str, title: str = "", subtitle: str = "", lines=None) -> bytes:
-    """TSPL для LP58 EVA (58×40): QR слева, до 3 строк текста справа."""
     texts = _label_lines(qr_text, title, subtitle, lines)
-    lines_cmd = []
-    lines_cmd.append("SIZE 58 mm, 40 mm")
-    lines_cmd.append("GAP 2 mm, 0 mm")
-    lines_cmd.append("CLS")
-    y_first = 90
-    y_step = 42
+    lines_cmd = ["SIZE 58 mm, 40 mm", "GAP 2 mm, 0 mm", "CODEPAGE 866", "CLS"]
+
+    x_start = 380
+    col_step = 32
+    y_base = 5
+
     for i, t in enumerate(texts):
-        if i == 0:
-            lines_cmd.append(f'TEXT 280,{y_first},"3",0,1,1,"{t[:18]}"')
-        else:
-            lines_cmd.append(f'TEXT 280,{y_first + i * y_step},"1",0,1,1,"{t[:24]}"')
-    lines_cmd.append(f'QRCODE 30,20,H,13,A,0,M2,S7,"{qr_text[:80]}"')
+        x = x_start + i * col_step
+        maxlen = 18
+        lines_cmd.append(f'TEXT {x},{y_base},"2",90,1,1,"{t[:maxlen]}"')
+
+    cell = _qr_cell_size(len(qr_text))
+    ecc = _qr_ecc_level(len(qr_text))
+    lines_cmd.append(f'QRCODE 30,20,{ecc},13,A,0,M2,S{cell},"{qr_text[:80]}"')
     lines_cmd.append("PRINT 1")
-    # TSPL-принтеры с русским шрифтом обычно работают в cp866
     return ("\r\n".join(lines_cmd) + "\r\n").encode("cp866", errors="replace")
 
 
