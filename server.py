@@ -56,6 +56,25 @@ def _is_file_port(port: str) -> bool:
     return p.startswith("file") or p.startswith("portprompt") or p in ("nul", "null")
 
 
+PRINTER_FAMILIES = {
+    "tlp100": ("tlp100", "tlp-100", "tlp 100", "terra nova"),
+    "lp58": ("lp58", "lp-58", "lp 58", "eva"),
+}
+
+
+def _family_match(name: str, kind: str) -> bool:
+    """Относится ли принтер к семейству kind (и не к чужому).
+
+    ВАЖНО: EPL и TSPL — разные языки. Нельзя подсунуть TSPL-задание (LP58)
+    EPL-принтеру (TLP100) — принтер получает мусор и только мигает.
+    """
+    low = name.lower()
+    other = "lp58" if kind == "tlp100" else "tlp100"
+    if any(o in low for o in PRINTER_FAMILIES[other]):
+        return False
+    return any(m in low for m in PRINTER_FAMILIES[kind])
+
+
 def _printer_details(name: str) -> dict:
     """Имя/порт/драйвер принтера (win32print.GetPrinter level 2). {} если недоступно."""
     try:
@@ -148,21 +167,24 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
     # физические — от лучшего порта к худшему
     physical.sort(key=lambda x: (x[2], x[3]))
 
-    def pick(needle):
-        cands = [x for x in physical if needle.lower() in x[0].lower()]
+    def pick() -> list:
+        cands = [x for x in physical if _family_match(x[0], kind)]
         # принтер по умолчанию Windows — самый надёжный сигнал: им печатают
         cands.sort(key=lambda x: (0 if x[0] == default else 1, x[2], x[3]))
         return cands
 
     if kind == "tlp100":
-        cands = ([x for x in pick("TLP100") if "- ZPL" not in x[0]] or pick("TLP100")
-                 or pick("LP58") or physical)
-    else:  # lp58
-        cands = pick("LP58") or pick("TLP100") or physical
+        # EPL-принтер предпочитаем без «- ZPL»
+        cands = [x for x in pick() if "- zpl" not in x[0].lower()] or pick()
+    else:  # lp58 — TSPL
+        cands = pick()
 
     if not cands:
-        print("⚠ Физический принтер не найден. Доступные: " + ("; ".join(
-            f"{p['name']} [{p['port'] or '?'}]" for p in _printers_report()) or "нет"))
+        print(f"⚠ Принтер «{kind}» не найден. Доступные: " + ("; ".join(
+            f"{p['name']} [{p['port'] or '?'}]" + (" (ФАЙЛ)" if p["file_port"] else "")
+            for p in _printers_report()) or "нет"))
+        print(f"⚠ Задание формата {'EPL (TLP100)' if kind == 'tlp100' else 'TSPL (LP58)'} "
+              f"не будет отправлено: нет принтера этого семейства (чужой язык печати не подставляем)")
         return ""
 
     chosen = cands[0][0]
@@ -327,20 +349,36 @@ def print_label(req: PrintRequest):
     lines = req.lines or None
 
     results = {}
-    tlp_name = resolve_printer("tlp100", req.printer_name)
-    lp_name = resolve_printer("lp58", req.printer_name)
-    if req.printer in ("tlp100", "both") and tlp_name:
-        results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1, lines=lines)
-    if req.printer in ("lp58", "both") and lp_name:
-        results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1, lines=lines)
+    explicit = (req.printer_name or "").strip()
+    if explicit:
+        # ручной выбор принтера: формат по имени, ровно одно задание, без дублей
+        kind = "lp58" if ("lp58" in explicit.lower() or "eva" in explicit.lower()) else "tlp100"
+        if kind == "tlp100":
+            tlp_name, lp_name = explicit, ""
+            results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=explicit,
+                                             copies=req.copies or 1, lines=lines)
+        else:
+            tlp_name, lp_name = "", explicit
+            results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=explicit,
+                                         copies=req.copies or 1, lines=lines)
+    else:
+        tlp_name = resolve_printer("tlp100")
+        lp_name = resolve_printer("lp58")
+        if req.printer in ("tlp100", "both") and tlp_name:
+            results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1, lines=lines)
+        if req.printer in ("lp58", "both") and lp_name:
+            results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1, lines=lines)
     if not results:
         results["error"] = "Физический принтер не найден (есть только виртуальные или печать в файл)"
         print("⚠ Нечего печатать. Принтеры: " + ("; ".join(
             f"{d['name']} [{d['port'] or '?'}]" + (" (ФАЙЛ)" if d["file_port"] else "")
             for d in _printers_report()) or "нет"))
-    ok = bool(results) and all(results.values())
+    ok = bool(results) and "error" not in results and all(results.values())
+    print(f"📥 Задание {qr_text!r} → ok={ok}, TLP100={tlp_name or '—'}, LP58={lp_name or '—'}")
     return {"ok": ok, "results": results, "qr": qr_text,
             "printer_tlp100": tlp_name, "printer_lp58": lp_name,
+            "message": ("Напечатано на: " + ", ".join(x for x in (tlp_name, lp_name) if x)) if ok
+                       else str(results.get("error") or "Не удалось отправить на принтер"),
             "printers": _printers_report()}
 
 

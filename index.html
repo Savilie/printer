@@ -341,6 +341,18 @@
             </div>
         </div>
 
+        <!-- Ручной выбор принтера (если автовыбор берёт не тот драйвер) -->
+        <div class="form-group">
+            <label for="printerOverride">🎯 Печатать именно на этот принтер</label>
+            <select id="printerOverride"
+                    style="width:100%;height:4.2rem;padding:0 1rem;border:1px solid #e2e2e2;border-radius:0.9rem;font-size:1.4rem;background:#fff;">
+                <option value="">— авто (как в магазине) —</option>
+            </select>
+            <div style="font-size:1.2rem;color:#777;margin-top:0.4rem;">
+                Если этикетка не выходит — выбери здесь другой драйвер TLP100 и попробуй снова.
+            </div>
+        </div>
+
         <!-- Кнопка печати -->
         <button class="btn-print" id="printBtn">
             🖨️ Напечатать
@@ -432,6 +444,14 @@
                 const data = await resp.json();
                 const details = data.details || (data.printers || []).map(n => ({ name: n, port: '', file_port: false }));
                 const resolved = data.resolved || {};
+                // заполняем ручной выбор принтера
+                const sel = document.getElementById('printerOverride');
+                if (sel) {
+                    const keep = sel.value;
+                    sel.innerHTML = '<option value="">— авто (как в магазине) —</option>'
+                        + details.map(p => `<option value="${p.name}">${p.name}${p.file_port ? ' — ПЕЧАТЬ В ФАЙЛ' : (p.port ? ' [' + p.port + ']' : '')}</option>`).join('');
+                    if (keep && details.some(p => p.name === keep)) sel.value = keep;
+                }
                 if (details.length > 0) {
                     const list = details.map(p => {
                         const isTlp = p.name.includes('TLP100') || p.name.includes('Terra Nova');
@@ -490,20 +510,30 @@
             showStatus('⏳ Отправка запроса...', 'info');
 
             try {
+                const payload = {
+                    qr: qrText,
+                    lines: lines,
+                    printer: selectedPrinter,
+                };
+                const override = document.getElementById('printerOverride')?.value;
+                if (override) payload.printer_name = override;
+
                 const resp = await fetch(`${SERVER_URL}/print`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        qr: qrText,
-                        lines: lines,
-                        printer: selectedPrinter,
-                    })
+                    body: JSON.stringify(payload)
                 });
 
                 const data = await resp.json();
 
-                if (resp.ok) {
-                    showStatus(`✅ ${data.message || 'Печать выполнена успешно!'}`, 'success');
+                // ВАЖНО: HTTP 200 ещё не значит, что печать была. Смотрим data.ok.
+                if (resp.ok && data.ok) {
+                    const used = [data.printer_tlp100, data.printer_lp58].filter(Boolean).join(' / ');
+                    showStatus(`✅ Напечатано${used ? ' — принтер: ' + used : ''}${override ? ' (выбран вручную)' : ''}`, 'success');
+                } else if (resp.ok) {
+                    const err = (data.results && data.results.error) || data.message || 'Принтер не принял задание';
+                    const tlp = data.printer_tlp100 ? ` • выбранный принтер: ${data.printer_tlp100}` : '';
+                    showStatus(`❌ ${err}${tlp}`, 'error');
                 } else {
                     showStatus(`❌ ${data.detail || data.error || 'Ошибка печати'}`, 'error');
                 }
