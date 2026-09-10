@@ -349,7 +349,8 @@
                 <option value="">— авто (как в магазине) —</option>
             </select>
             <div style="font-size:1.2rem;color:#777;margin-top:0.4rem;">
-                Если этикетка не выходит — выбери здесь другой драйвер TLP100 и попробуй снова.
+                Выбранный здесь принтер <b>запоминается</b> (файл printer-config.json рядом с exe) и используется
+                и в магазине, и в тестовой форме. Если этикетка не выходит — выбери другой драйвер и напечатай снова.
             </div>
         </div>
 
@@ -450,7 +451,9 @@
                     const keep = sel.value;
                     sel.innerHTML = '<option value="">— авто (как в магазине) —</option>'
                         + details.map(p => `<option value="${p.name}">${p.name}${p.file_port ? ' — ПЕЧАТЬ В ФАЙЛ' : (p.port ? ' [' + p.port + ']' : '')}</option>`).join('');
+                    const saved = (data.saved || {}).tlp100 || '';
                     if (keep && details.some(p => p.name === keep)) sel.value = keep;
+                    else if (saved && details.some(p => p.name === saved)) sel.value = saved;
                 }
                 if (details.length > 0) {
                     const list = details.map(p => {

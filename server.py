@@ -1,3 +1,7 @@
+import json
+import os
+import sys
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -60,6 +64,39 @@ PRINTER_FAMILIES = {
     "tlp100": ("tlp100", "tlp-100", "tlp 100", "terra nova"),
     "lp58": ("lp58", "lp-58", "lp 58", "eva"),
 }
+
+
+def _config_path() -> str:
+    """Файл настроек рядом с exe (не внутри распакованного _MEIPASS)."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "printer-config.json")
+
+
+def _load_prefs() -> dict:
+    try:
+        with open(_config_path(), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_pref(kind: str, name: str) -> None:
+    """Запомнить принтер, выбранный вручную (его же использует магазин)."""
+    path = _config_path()
+    d = _load_prefs()
+    if d.get(kind) == name:
+        return
+    d[kind] = name
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        print(f"💾 Запомнил принтер для «{kind}»: {name}\n   (файл {path})")
+    except Exception as e:
+        print(f"⚠ не смог сохранить настройку: {e}")
 
 
 def _family_match(name: str, kind: str) -> bool:
@@ -147,6 +184,11 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
     names = _all_printers()
     if explicit and explicit in names:
         return explicit
+    # принтер, выбранный вручную ранее (в тестовой форме) — он же для магазина
+    saved = (_load_prefs() or {}).get(kind, "")
+    if saved and saved in names:
+        print(f"📌 Сохранённый принтер для «{kind}»: {saved}")
+        return saved
     virtual = ("XPS", "PDF", "Fax", "OneNote", "Generic", "ABBYY", "FineReader")
     default = _default_printer()
 
@@ -334,7 +376,8 @@ def printers():
         resolved = {"tlp100": resolve_printer("tlp100"), "lp58": resolve_printer("lp58")}
     except Exception as e:
         return {"printers": [], "error": str(e)}
-    return {"printers": [d["name"] for d in det], "details": det, "resolved": resolved}
+    return {"printers": [d["name"] for d in det], "details": det,
+            "resolved": resolved, "saved": _load_prefs()}
 
 
 @app.post("/print")
@@ -353,6 +396,7 @@ def print_label(req: PrintRequest):
     if explicit:
         # ручной выбор принтера: формат по имени, ровно одно задание, без дублей
         kind = "lp58" if ("lp58" in explicit.lower() or "eva" in explicit.lower()) else "tlp100"
+        _save_pref(kind, explicit)
         if kind == "tlp100":
             tlp_name, lp_name = explicit, ""
             results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=explicit,
