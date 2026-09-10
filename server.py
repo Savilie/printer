@@ -93,6 +93,26 @@ def _printers_report() -> list:
     return out
 
 
+def _port_rank(port: str) -> int:
+    """Чем меньше — тем «физичнее» порт. USB в приоритете, сеть позже."""
+    p = (port or "").strip().lower()
+    if p.startswith("usb"):
+        return 0
+    if p.startswith(("lpt", "com", "dot4", "printer")):
+        return 1
+    if p.startswith("ip_") or p.startswith("wsd") or p.startswith("\\\\") or "network" in p:
+        return 2
+    return 3
+
+
+def _default_printer() -> str:
+    """Принтер Windows по умолчанию (им обычно и печатают). '' если нет."""
+    try:
+        return win32print.GetDefaultPrinter() or ""
+    except Exception:
+        return ""
+
+
 def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
     """Найти подходящий физический принтер: TLP100 если есть, иначе LP58, иначе любой.
 
@@ -100,15 +120,19 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
     печати В ФАЙЛ (FILE:/PORTPROMPT:) — иначе задание «печатается» в label.prn
     и на бумагу ничего не выходит.
 
+    Из подходящих сначала берётся принтер Windows по умолчанию, затем лучший по
+    типу порта (USB → LPT/COM → сеть), потом по порядку.
+
     Возвращает '' если физических принтеров нет.
     """
     names = _all_printers()
     if explicit and explicit in names:
         return explicit
     virtual = ("XPS", "PDF", "Fax", "OneNote", "Generic", "ABBYY", "FineReader")
+    default = _default_printer()
 
     physical, skipped = [], []
-    for n in names:
+    for idx, n in enumerate(names):
         if any(v.lower() in n.lower() for v in virtual):
             continue
         det = _printer_details(n)
@@ -116,22 +140,36 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
         if _is_file_port(port):
             skipped.append(f"{n} [{port or '?'}]")
             continue
-        physical.append(n)
+        physical.append((n, port, _port_rank(port), idx))
 
     if skipped:
         print("⚠ Пропущены (печать в файл): " + "; ".join(skipped))
 
-    def has(needle):
-        return [n for n in physical if needle.lower() in n.lower()]
+    # физические — от лучшего порта к худшему
+    physical.sort(key=lambda x: (x[2], x[3]))
+
+    def pick(needle):
+        cands = [x for x in physical if needle.lower() in x[0].lower()]
+        # принтер по умолчанию Windows — самый надёжный сигнал: им печатают
+        cands.sort(key=lambda x: (0 if x[0] == default else 1, x[2], x[3]))
+        return cands
 
     if kind == "tlp100":
-        prefs = (has("TLP100") and [n for n in has("TLP100") if "- ZPL" not in n]) or has("TLP100") or has("LP58") or physical
+        cands = ([x for x in pick("TLP100") if "- ZPL" not in x[0]] or pick("TLP100")
+                 or pick("LP58") or physical)
     else:  # lp58
-        prefs = has("LP58") or has("TLP100") or physical
-    if not prefs:
+        cands = pick("LP58") or pick("TLP100") or physical
+
+    if not cands:
         print("⚠ Физический принтер не найден. Доступные: " + ("; ".join(
             f"{p['name']} [{p['port'] or '?'}]" for p in _printers_report()) or "нет"))
-    return prefs[0] if prefs else ""
+        return ""
+
+    chosen = cands[0][0]
+    if len(cands) > 1:
+        print("🖨 Кандидаты: " + "; ".join(
+            f"{n} [{p}]{' ← ВЫБРАН' if n == chosen else ''}" for n, p, _, _ in cands))
+    return chosen
 
 
 def _raw_printer(printer_name: str, data: bytes) -> bool:
@@ -271,9 +309,10 @@ def ping():
 def printers():
     try:
         det = _printers_report()
+        resolved = {"tlp100": resolve_printer("tlp100"), "lp58": resolve_printer("lp58")}
     except Exception as e:
         return {"printers": [], "error": str(e)}
-    return {"printers": [d["name"] for d in det], "details": det}
+    return {"printers": [d["name"] for d in det], "details": det, "resolved": resolved}
 
 
 @app.post("/print")

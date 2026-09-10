@@ -431,6 +431,7 @@
                 const resp = await fetch(`${SERVER_URL}/printers`);
                 const data = await resp.json();
                 const details = data.details || (data.printers || []).map(n => ({ name: n, port: '', file_port: false }));
+                const resolved = data.resolved || {};
                 if (details.length > 0) {
                     const list = details.map(p => {
                         const isTlp = p.name.includes('TLP100') || p.name.includes('Terra Nova');
@@ -440,9 +441,15 @@
                         let dot = 'gray';
                         if (isTlp || isLp) dot = 'green';
                         if (p.file_port || isVirtual) dot = 'red';
-                        const tail = p.file_port
+                        let tail = p.file_port
                             ? ` <b style="color:#dc2626">[${p.port || 'файл'} — печать в файл!]</b>`
                             : (p.port ? ` [${p.port}]` : '');
+                        if (p.name === resolved.tlp100 || p.name === resolved.lp58) {
+                            const kinds = [];
+                            if (p.name === resolved.tlp100) kinds.push('товары');
+                            if (p.name === resolved.lp58) kinds.push('коробки');
+                            tail += ` <b style="color:#16a34a">← печатаем сюда (${kinds.join(', ')})</b>`;
+                        }
                         return `<span><span class="dot ${dot}"></span>${p.name}${tail}</span>`;
                     }).join(' ');
                     printersStatus.innerHTML = '🖨️ ' + list;
