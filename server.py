@@ -60,6 +60,24 @@ def _is_file_port(port: str) -> bool:
     return p.startswith("file") or p.startswith("portprompt") or p in ("nul", "null")
 
 
+# Признаки виртуальных принтеров: они «печатают» в PDF/XPS/файл, а не на бумагу.
+# RAW-задание (EPL/TSPL) на такой драйвер = битый PDF в «Документах»
+# (имя документа у нас «Label» → Label.pdf) — печать не идёт, файл не открывается.
+_VIRTUAL_HINTS = (
+    "pdf", "xps", "onenote", "fax", "one note", "print to", "microsoft print",
+    "generic", "abbyy", "finereader", "uniflow", "cutepdf", "foxit", "nitro",
+    "dopdf", "bullzip", "novapdf", "print to file", "документ xps",
+)
+
+
+def _is_virtual_printer(name: str, port: str = "") -> bool:
+    """Виртуальный принтер (PDF/XPS/Fax/OneNote/…) или порт «печать в файл»."""
+    low = (name or "").lower()
+    if any(h in low for h in _VIRTUAL_HINTS):
+        return True
+    return _is_file_port(port)
+
+
 PRINTER_FAMILIES = {
     "tlp100": ("tlp100", "tlp-100", "tlp 100", "terra nova"),
     "lp58": ("lp58", "lp-58", "lp 58", "eva"),
@@ -85,7 +103,14 @@ def _load_prefs() -> dict:
 
 
 def _save_pref(kind: str, name: str) -> None:
-    """Запомнить принтер, выбранный вручную (его же использует магазин)."""
+    """Запомнить принтер, выбранный вручную (его же использует магазин).
+
+    Виртуальные принтеры (PDF/XPS/Fax/файл) НЕ запоминаем: печатать на них
+    нельзя, иначе магазин будет молча «печатать» в Label.pdf в «Документах».
+    """
+    if _is_virtual_printer(name, _printer_details(name).get("port", "")):
+        print(f"⚠ «{name}» — виртуальный принтер (PDF/XPS/файл), в настройки не сохраняю")
+        return
     path = _config_path()
     d = _load_prefs()
     if d.get(kind) == name:
@@ -97,6 +122,21 @@ def _save_pref(kind: str, name: str) -> None:
         print(f"💾 Запомнил принтер для «{kind}»: {name}\n   (файл {path})")
     except Exception as e:
         print(f"⚠ не смог сохранить настройку: {e}")
+
+
+def _forget_pref(kind: str) -> None:
+    """Убрать сохранённый принтер для типа (например, оказался виртуальным)."""
+    path = _config_path()
+    d = _load_prefs()
+    if kind not in d:
+        return
+    d.pop(kind, None)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        print(f"🧹 Убрал негодный сохранённый принтер для «{kind}»")
+    except Exception as e:
+        print(f"⚠ не смог обновить настройку: {e}")
 
 
 def _family_match(name: str, kind: str) -> bool:
@@ -145,6 +185,7 @@ def _printers_report() -> list:
             "port": port,
             "driver": det.get("driver", ""),
             "file_port": _is_file_port(port),
+            "virtual": _is_virtual_printer(n, port),
         })
     return out
 
@@ -183,28 +224,36 @@ def resolve_printer(kind: str, explicit: Optional[str] = None) -> str:
     """
     names = _all_printers()
     if explicit and explicit in names:
-        return explicit
+        det = _printer_details(explicit)
+        if _is_virtual_printer(explicit, det.get("port", "")):
+            print(f"⚠ Выбранный «{explicit}» [{det.get('port') or '?'}] — виртуальный принтер "
+                  f"(PDF/XPS/файл). Игнорирую и выбираю физический: RAW-задание на виртуальный "
+                  f"даёт битый PDF в «Документах», а не этикетку")
+        else:
+            return explicit
     # принтер, выбранный вручную ранее (в тестовой форме) — он же для магазина
     saved = (_load_prefs() or {}).get(kind, "")
     if saved and saved in names:
-        print(f"📌 Сохранённый принтер для «{kind}»: {saved}")
-        return saved
-    virtual = ("XPS", "PDF", "Fax", "OneNote", "Generic", "ABBYY", "FineReader")
+        if _is_virtual_printer(saved, _printer_details(saved).get("port", "")):
+            print(f"🧹 Сохранённый принтер «{saved}» — виртуальный/печать в файл: "
+                  f"выбрасываю из настроек и беру физический")
+            _forget_pref(kind)
+        else:
+            print(f"📌 Сохранённый принтер для «{kind}»: {saved}")
+            return saved
     default = _default_printer()
 
     physical, skipped = [], []
     for idx, n in enumerate(names):
-        if any(v.lower() in n.lower() for v in virtual):
-            continue
         det = _printer_details(n)
         port = det.get("port", "")
-        if _is_file_port(port):
-            skipped.append(f"{n} [{port or '?'}]")
+        if _is_virtual_printer(n, port):
+            skipped.append(f"{n} [{port or '?'}]{' — виртуальный' if not _is_file_port(port) else ' — печать в файл'}")
             continue
         physical.append((n, port, _port_rank(port), idx))
 
     if skipped:
-        print("⚠ Пропущены (печать в файл): " + "; ".join(skipped))
+        print("⚠ Пропущены (виртуальные / печать в файл): " + "; ".join(skipped))
 
     # физические — от лучшего порта к худшему
     physical.sort(key=lambda x: (x[2], x[3]))
@@ -380,6 +429,19 @@ def printers():
             "resolved": resolved, "saved": _load_prefs()}
 
 
+@app.post("/printer-config/reset")
+def reset_printer_config():
+    """Сбросить запомненный вручную принтер (например, был выбран виртуальный PDF)."""
+    path = _config_path()
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+        print("🧹 Сохранённый выбор принтера сброшен (printer-config.json удалён)")
+        return {"ok": True, "message": "Сохранённый выбор принтера сброшен — снова работает автоподбор"}
+    except Exception as e:
+        return {"ok": False, "message": f"не удалось сбросить: {e}"}
+
+
 @app.post("/print")
 def print_label(req: PrintRequest):
     qr_text = req.qr or req.id or ""
@@ -393,6 +455,14 @@ def print_label(req: PrintRequest):
 
     results = {}
     explicit = (req.printer_name or "").strip()
+    ignored_explicit = ""
+    if explicit:
+        det = _printer_details(explicit)
+        if _is_virtual_printer(explicit, det.get("port", "")):
+            ignored_explicit = explicit
+            print(f"⚠ Ручной выбор «{explicit}» [{det.get('port') or '?'}] — виртуальный принтер "
+                  f"(PDF/XPS/файл): игнорирую, печатаю на физический, иначе вышел бы битый PDF в «Документах»")
+            explicit = ""
     if explicit:
         # ручной выбор принтера: формат по имени, ровно одно задание, без дублей
         kind = "lp58" if ("lp58" in explicit.lower() or "eva" in explicit.lower()) else "tlp100"
@@ -418,11 +488,18 @@ def print_label(req: PrintRequest):
             f"{d['name']} [{d['port'] or '?'}]" + (" (ФАЙЛ)" if d["file_port"] else "")
             for d in _printers_report()) or "нет"))
     ok = bool(results) and "error" not in results and all(results.values())
-    print(f"📥 Задание {qr_text!r} → ok={ok}, TLP100={tlp_name or '—'}, LP58={lp_name or '—'}")
+    print(f"📥 Задание {qr_text!r} → ok={ok}, TLP100={tlp_name or '—'}, LP58={lp_name or '—'}"
+          + (f", проигнорирован «{ignored_explicit}» (виртуальный)" if ignored_explicit else ""))
+    if ok:
+        msg = "Напечатано на: " + ", ".join(x for x in (tlp_name, lp_name) if x)
+        if ignored_explicit:
+            msg += f". Выбранный «{ignored_explicit}» — виртуальный (PDF/XPS), печатать на него нельзя"
+    else:
+        msg = str(results.get("error") or "Не удалось отправить на принтер")
     return {"ok": ok, "results": results, "qr": qr_text,
             "printer_tlp100": tlp_name, "printer_lp58": lp_name,
-            "message": ("Напечатано на: " + ", ".join(x for x in (tlp_name, lp_name) if x)) if ok
-                       else str(results.get("error") or "Не удалось отправить на принтер"),
+            "ignored_printer": ignored_explicit,
+            "message": msg,
             "printers": _printers_report()}
 
 

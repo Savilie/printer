@@ -352,6 +352,15 @@
                 Выбранный здесь принтер <b>запоминается</b> (файл printer-config.json рядом с exe) и используется
                 и в магазине, и в тестовой форме. Если этикетка не выходит — выбери другой драйвер и напечатай снова.
             </div>
+            <div id="overrideWarning" style="display:none;margin-top:0.6rem;font-size:1.25rem;color:#dc2626;line-height:1.4;">
+                ⚠ Это <b>виртуальный</b> принтер (PDF/XPS) — он не печатает на бумагу, а кладёт файл в «Документы»
+                (у нас это Label.pdf, и он не печатается). Для этикеток нужен драйвер физического принтера
+                TLP100 / Terra Nova. Выбор виртуального агент проигнорирует и напечатает на физический.
+            </div>
+            <button type="button" id="resetPrinterBtn"
+                    style="margin-top:0.8rem;padding:0.7rem 1.3rem;border:1px solid #e2e2e2;background:#fafafa;border-radius:0.9rem;font-size:1.3rem;cursor:pointer;">
+                ♻ Сбросить запомненный принтер (вернуть автоподбор)
+            </button>
         </div>
 
         <!-- Кнопка печати -->
@@ -450,17 +459,24 @@
                 if (sel) {
                     const keep = sel.value;
                     sel.innerHTML = '<option value="">— авто (как в магазине) —</option>'
-                        + details.map(p => `<option value="${p.name}">${p.name}${p.file_port ? ' — ПЕЧАТЬ В ФАЙЛ' : (p.port ? ' [' + p.port + ']' : '')}</option>`).join('');
+                        + details.map(p => {
+                            const bad = p.virtual || p.file_port;
+                            const tail = p.file_port
+                                ? ' — ПЕЧАТЬ В ФАЙЛ!'
+                                : (p.virtual ? ' — ВИРТУАЛЬНЫЙ (PDF/XPS)!' : (p.port ? ' [' + p.port + ']' : ''));
+                            return `<option value="${p.name}"${bad ? ' style="color:#dc2626"' : ''}>${p.name}${tail}</option>`;
+                        }).join('');
                     const saved = (data.saved || {}).tlp100 || '';
                     if (keep && details.some(p => p.name === keep)) sel.value = keep;
                     else if (saved && details.some(p => p.name === saved)) sel.value = saved;
+                    updateOverrideWarning();
                 }
                 if (details.length > 0) {
                     const list = details.map(p => {
                         const isTlp = p.name.includes('TLP100') || p.name.includes('Terra Nova');
                         const isLp = p.name.includes('LP58') || p.name.includes('EVA');
                         // «печать в файл» и виртуальные принтеры помечаем красным
-                        const isVirtual = /pdf|xps|fax|onenote|abbyy|finereader|generic/i.test(p.name);
+                        const isVirtual = p.virtual || /pdf|xps|fax|onenote|abbyy|finereader|generic/i.test(p.name);
                         let dot = 'gray';
                         if (isTlp || isLp) dot = 'green';
                         if (p.file_port || isVirtual) dot = 'red';
@@ -532,7 +548,10 @@
                 // ВАЖНО: HTTP 200 ещё не значит, что печать была. Смотрим data.ok.
                 if (resp.ok && data.ok) {
                     const used = [data.printer_tlp100, data.printer_lp58].filter(Boolean).join(' / ');
-                    showStatus(`✅ Напечатано${used ? ' — принтер: ' + used : ''}${override ? ' (выбран вручную)' : ''}`, 'success');
+                    const extra = data.ignored_printer
+                        ? ` ⚠ «${data.ignored_printer}» — виртуальный (PDF/XPS), проигнорирован`
+                        : '';
+                    showStatus(`✅ Напечатано${used ? ' — принтер: ' + used : ''}${override ? ' (выбран вручную)' : ''}${extra}`, data.ignored_printer ? 'error' : 'success');
                 } else if (resp.ok) {
                     const err = (data.results && data.results.error) || data.message || 'Принтер не принял задание';
                     const tlp = data.printer_tlp100 ? ` • выбранный принтер: ${data.printer_tlp100}` : '';
@@ -550,6 +569,34 @@
 
         // --- Обработчики ---
         printBtn.addEventListener('click', printLabel);
+
+        // предупреждение, если выбран виртуальный принтер (PDF/XPS) или печать в файл
+        function updateOverrideWarning() {
+            const sel = document.getElementById('printerOverride');
+            const box = document.getElementById('overrideWarning');
+            if (!sel || !box) return;
+            const opt = sel.options[sel.selectedIndex];
+            const bad = !!opt && /ВИРТУАЛЬНЫЙ|ПЕЧАТЬ В ФАЙЛ/i.test(opt.textContent || '');
+            box.style.display = bad ? 'block' : 'none';
+        }
+        const overrideSel = document.getElementById('printerOverride');
+        if (overrideSel) overrideSel.addEventListener('change', updateOverrideWarning);
+
+        // сброс запомненного принтера (например, случайно выбрали виртуальный PDF)
+        const resetBtn = document.getElementById('resetPrinterBtn');
+        if (resetBtn) resetBtn.addEventListener('click', async () => {
+            try {
+                const r = await fetch(`${SERVER_URL}/printer-config/reset`, { method: 'POST' });
+                const d = await r.json();
+                const sel = document.getElementById('printerOverride');
+                if (sel) sel.value = '';
+                updateOverrideWarning();
+                showStatus(d.ok ? '✅ ' + d.message : '❌ ' + d.message, d.ok ? 'success' : 'error');
+                checkPrinters();
+            } catch (e) {
+                showStatus('❌ Не удалось сбросить: ' + e.message, 'error');
+            }
+        });
 
         productInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') printLabel();
