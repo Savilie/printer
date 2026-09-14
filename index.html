@@ -487,8 +487,12 @@
                             const kinds = [];
                             if (p.name === resolved.tlp100) kinds.push('товары');
                             if (p.name === resolved.lp58) kinds.push('коробки');
-                            const lm = (data.label_mm || {})[p.name === resolved.tlp100 ? 'tlp100' : 'lp58'];
-                            const size = lm && lm[0] ? ` , этикетка ${lm[0]}×${lm[1]} мм` : '';
+                            const key = p.name === resolved.tlp100 ? 'tlp100' : 'lp58';
+                            const lm = (data.label_mm || {})[key];
+                            const dp = (data.label_dpi || {})[key];
+                            const size = lm && lm[0]
+                                ? ` , этикетка ${lm[0]}×${lm[1]} мм${dp ? ', ' + dp + ' dpi' : ''}`
+                                : (dp ? ` , ${dp} dpi` : '');
                             tail += ` <b style="color:#16a34a">← печатаем сюда (${kinds.join(', ')}${size})</b>`;
                         }
                         return `<span><span class="dot ${dot}"></span>${p.name}${tail}</span>`;

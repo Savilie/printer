@@ -181,6 +181,29 @@ def _driver_label_mm(printer_name: str) -> tuple:
             pass
 
 
+def _driver_dpi(printer_name: str) -> int:
+    """Разрешение драйвера по X (точек/дюйм). 0 если неизвестно.
+
+    Нужно, чтобы файл этикетки рисовался 1:1 с драйвером: если драйвер печатает
+    300 dpi, а картинка сделана на 203 dpi, Windows её растянет — текст и QR
+    получаются «волнистыми» и нечитаемыми.
+    """
+    try:
+        hdc = win32ui.CreateDC()
+        hdc.CreatePrinterDC(printer_name)
+    except Exception:
+        return 0
+    try:
+        return int(hdc.GetDeviceCaps(88))  # LOGPIXELSX
+    except Exception:
+        return 0
+    finally:
+        try:
+            hdc.DeleteDC()
+        except Exception:
+            pass
+
+
 def _printer_details(name: str) -> dict:
     """Имя/порт/драйвер принтера (win32print.GetPrinter level 2). {} если недоступно."""
     try:
@@ -455,13 +478,19 @@ def printers():
     except Exception as e:
         return {"printers": [], "error": str(e)}
     label_mm = {}
+    label_dpi = {}
     for kind, name in resolved.items():
-        if name:
-            w, h = _driver_label_mm(name)
-            if w and h:
-                label_mm[kind] = [w, h]
+        if not name:
+            continue
+        w, h = _driver_label_mm(name)
+        if w and h:
+            label_mm[kind] = [w, h]
+        d = _driver_dpi(name)
+        if d:
+            label_dpi[kind] = d
     return {"printers": [d["name"] for d in det], "details": det,
-            "resolved": resolved, "saved": _load_prefs(), "label_mm": label_mm}
+            "resolved": resolved, "saved": _load_prefs(),
+            "label_mm": label_mm, "label_dpi": label_dpi}
 
 
 @app.post("/printer-config/reset")
