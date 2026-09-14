@@ -152,6 +152,35 @@ def _family_match(name: str, kind: str) -> bool:
     return any(m in low for m in PRINTER_FAMILIES[kind])
 
 
+def _driver_label_mm(printer_name: str) -> tuple:
+    """Размер этикетки из настроек драйвера (мм): (ширина, длина). (0, 0) если неизвестно.
+
+    DEVMODE хранит PaperWidth/PaperLength в десятых долях миллиметра.
+    Нужно, чтобы файл этикетки и раскладка совпадали с РЕАЛЬНОЙ этикеткой в принтере.
+    """
+    try:
+        h = win32print.OpenPrinter(printer_name)
+    except Exception:
+        return (0.0, 0.0)
+    try:
+        info = win32print.GetPrinter(h, 2) or {}
+        dm = info.get("pDevMode")
+        if not dm:
+            return (0.0, 0.0)
+        w = float(getattr(dm, "PaperWidth", 0) or 0) / 10.0
+        length = float(getattr(dm, "PaperLength", 0) or 0) / 10.0
+        if not (5 <= w <= 1000) or not (5 <= length <= 1000):
+            return (0.0, 0.0)
+        return (round(w, 1), round(length, 1))
+    except Exception:
+        return (0.0, 0.0)
+    finally:
+        try:
+            win32print.ClosePrinter(h)
+        except Exception:
+            pass
+
+
 def _printer_details(name: str) -> dict:
     """Имя/порт/драйвер принтера (win32print.GetPrinter level 2). {} если недоступно."""
     try:
@@ -425,8 +454,14 @@ def printers():
         resolved = {"tlp100": resolve_printer("tlp100"), "lp58": resolve_printer("lp58")}
     except Exception as e:
         return {"printers": [], "error": str(e)}
+    label_mm = {}
+    for kind, name in resolved.items():
+        if name:
+            w, h = _driver_label_mm(name)
+            if w and h:
+                label_mm[kind] = [w, h]
     return {"printers": [d["name"] for d in det], "details": det,
-            "resolved": resolved, "saved": _load_prefs()}
+            "resolved": resolved, "saved": _load_prefs(), "label_mm": label_mm}
 
 
 @app.post("/printer-config/reset")
