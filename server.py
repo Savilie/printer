@@ -9,6 +9,15 @@ from pydantic import BaseModel
 import win32print
 import win32ui
 from typing import Literal, Optional
+from io import BytesIO
+from fastapi.responses import StreamingResponse
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas as pdfcanvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import qrcode
+
 
 app = FastAPI(title="Принтер-сервер для ПВЗ", version="1.1")
 
@@ -27,6 +36,130 @@ async def private_network_headers(request, call_next):
     response = await call_next(request)
     response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
+
+def _register_pdf_font() -> str:
+    """Шрифт с кириллицей для PDF. Base14-шрифты reportlab кириллицу не умеют."""
+    candidates = [
+        (r"C:\Windows\Fonts\arial.ttf", "Arial"),
+        (r"C:\Windows\Fonts\calibri.ttf", "Calibri"),
+        (r"C:\Windows\Fonts\tahoma.ttf", "Tahoma"),
+    ]
+    for path, name in candidates:
+        if os.path.exists(path):
+            try:
+                pdfmetrics.registerFont(TTFont(name, path))
+                return name
+            except Exception:
+                continue
+    return "Helvetica"  # запасной вариант — но БЕЗ кириллицы
+
+
+_PDF_FONT = _register_pdf_font()
+
+_QR_ECC_MAP = {
+    "L": qrcode.constants.ERROR_CORRECT_L,
+    "M": qrcode.constants.ERROR_CORRECT_M,
+    "Q": qrcode.constants.ERROR_CORRECT_Q,
+    "H": qrcode.constants.ERROR_CORRECT_H,
+}
+
+
+def _make_qr_image(data: str, ecc: str = "M") -> BytesIO:
+    qr = qrcode.QRCode(border=1, box_size=10, error_correction=_QR_ECC_MAP.get(ecc, qrcode.constants.ERROR_CORRECT_M))
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+LABEL_W_MM = 50.0
+LABEL_H_MM = 37.5
+
+
+def build_label_pdf(qr_text: str, title: str = "", subtitle: str = "", lines=None,
+                     label_w_mm: float = LABEL_W_MM, label_h_mm: float = LABEL_H_MM) -> bytes:
+    texts = _label_lines(qr_text, title, subtitle, lines)
+    ecc = _qr_ecc_level(len(qr_text))
+
+    page_w = label_w_mm * mm
+    page_h = label_h_mm * mm
+    buf = BytesIO()
+    c = pdfcanvas.Canvas(buf, pagesize=(page_w, page_h))
+
+    margin = 1.5 * mm
+
+    # --- QR как вектор ---
+    qr = qrcode.QRCode(border=1, error_correction=_QR_ECC_MAP.get(ecc, qrcode.constants.ERROR_CORRECT_M))
+    qr.add_data(qr_text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n_mod = len(matrix)
+
+    qr_size = min(page_h - 2 * margin, page_w * 0.55)
+    module = qr_size / n_mod
+    qr_x = margin
+    qr_y = (page_h - qr_size) / 2
+
+    c.setFillColorRGB(0, 0, 0)
+    for row_i, row in enumerate(matrix):
+        for col_i, dark in enumerate(row):
+            if dark:
+                x = qr_x + col_i * module
+                y = qr_y + (n_mod - 1 - row_i) * module
+                c.rect(x, y, module, module, fill=1, stroke=0)
+
+    # --- Текст ---
+    text_x_start = qr_x + qr_size - 6.0 * mm
+    text_area_width = page_w - text_x_start - margin
+    text_area_height = page_h - 2 * margin
+
+    base_size, min_size = 8.0, 4.0
+    col_gap = 0.8 * mm
+    thickness_factor = 1.15  # запас колонки сверх размера шрифта (на выносные элементы букв)
+
+    sized_texts = []
+    for t in texts:
+        size = base_size
+        while size > min_size and pdfmetrics.stringWidth(t, _PDF_FONT, size) > text_area_height:
+            size -= 0.5
+        while pdfmetrics.stringWidth(t, _PDF_FONT, size) > text_area_height and len(t) > 1:
+            t = t[:-1]
+        sized_texts.append([t, size])
+
+    col_thickness = [size * thickness_factor for _, size in sized_texts]
+    total_block_width = sum(col_thickness) + col_gap * max(0, len(sized_texts) - 1)
+
+    # ЗАЩИТА ОТ ОБРЕЗКИ: если пачка колонок шире доступного места — уменьшаем шрифт пропорционально
+    if total_block_width > text_area_width and total_block_width > 0:
+        scale = text_area_width / total_block_width
+        for pair in sized_texts:
+            pair[1] = max(min_size, pair[1] * scale)
+        col_thickness = [size * thickness_factor for _, size in sized_texts]
+        total_block_width = sum(col_thickness) + col_gap * max(0, len(sized_texts) - 1)
+
+    start_x = text_x_start + max(0, (text_area_width - total_block_width) / 2)
+
+    cursor = start_x
+    for (t, size), thickness in zip(sized_texts, col_thickness):
+        col_center = cursor + thickness / 2
+        text_len = pdfmetrics.stringWidth(t, _PDF_FONT, size)
+        # ЦЕНТРИРОВАНИЕ ПО ВЫСОТЕ: строка теперь стоит на уровне QR, не прижата к низу
+        y_start = margin + (text_area_height - text_len) / 2
+        c.saveState()
+        c.translate(col_center, y_start)
+        c.rotate(90)
+        c.setFont(_PDF_FONT, size)
+        c.drawString(0, -size / 3, t)
+        c.restoreState()
+        cursor += thickness + col_gap
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.read()
 
 
 # --- Модели данных для запросов ---
@@ -565,6 +698,32 @@ def print_label(req: PrintRequest):
             "ignored_printer": ignored_explicit,
             "message": msg,
             "printers": _printers_report()}
+
+
+@app.post("/print/pdf")
+def print_label_pdf(req: PrintRequest):
+    qr_text = req.qr or req.id or ""
+    if not qr_text:
+        raise HTTPException(400, "Нет данных для печати (qr/id)")
+
+    title = (req.title or "").replace("*-", "").replace("ID:", "")
+    subtitle = req.subtitle or ""
+    lines = req.lines or None
+
+    # Берём реальный размер из драйвера TLP100, если он определился;
+    # иначе — запасной вариант на захардкоженные 50x37.5мм.
+    printer_name = resolve_printer("tlp100", (req.printer_name or "").strip() or None)
+    w, h = _driver_label_mm(printer_name) if printer_name else (0, 0)
+    label_w = w or LABEL_W_MM
+    label_h = h or LABEL_H_MM
+
+    pdf_bytes = build_label_pdf(qr_text, title, subtitle, lines, label_w_mm=label_w, label_h_mm=label_h)
+    safe_name = "".join(ch if ch.isalnum() else "_" for ch in qr_text)[:40] or "label"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
+    )
 
 
 if __name__ == "__main__":

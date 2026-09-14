@@ -368,6 +368,10 @@
             🖨️ Напечатать
         </button>
 
+        <button class="btn-print" id="pdfBtn" style="background:#059669;margin-top:10px;">
+            💾 Сохранить PDF
+        </button>
+
         <!-- Статус -->
         <div class="status" id="statusMessage">
             <span id="statusText"></span>
@@ -570,6 +574,63 @@
             } finally {
                 printBtn.disabled = false;
                 printBtn.innerHTML = '🖨️ Напечатать';
+            }
+        }
+
+        const pdfBtn = document.getElementById('pdfBtn');
+        pdfBtn.addEventListener('click', downloadPdf);
+
+        function collectLabelData() {
+            if (selectedLabelType === 'box') {
+                const code = boxCodeInput.value.trim();
+                if (!code) { showStatus('❌ Введите код коробки', 'error'); return null; }
+                return {
+                    qr: code,
+                    lines: ['Коробка', code.replace(/^[- ]+/, ''), boxDestInput.value.trim() || ''],
+                };
+            }
+            const id = productInput.value.trim();
+            if (!id) { showStatus('❌ Введите ID товара', 'error'); return null; }
+            return {
+                qr: `*-${id}`,
+                lines: [id, goodsBrandInput.value.trim(), goodsArticleInput.value.trim()],
+            };
+        }
+
+        async function downloadPdf() {
+            const data = collectLabelData();
+            if (!data) return;
+
+            pdfBtn.disabled = true;
+            pdfBtn.innerHTML = '⏳ Формирование...';
+            hideStatus();
+            showStatus('⏳ Формирование PDF...', 'info');
+
+            try {
+                const resp = await fetch(`${SERVER_URL}/print/pdf`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Ошибка сервера');
+                }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `label_${data.qr.replace(/[^a-zA-Zа-яА-Я0-9_-]/g, '_')}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                showStatus('✅ PDF сохранён', 'success');
+            } catch (e) {
+                showStatus(`❌ Не удалось сформировать PDF: ${e.message}`, 'error');
+            } finally {
+                pdfBtn.disabled = false;
+                pdfBtn.innerHTML = '💾 Сохранить PDF';
             }
         }
 
