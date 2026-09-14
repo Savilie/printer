@@ -18,6 +18,8 @@ python -m PyInstaller --noconfirm --onefile --name printer-server ^
   --hidden-import uvicorn.lifespan ^
   --hidden-import uvicorn.lifespan.on ^
   --collect-all fastapi ^
+  --collect-all reportlab ^
+  --collect-all qrcode ^
   server.py
 
 echo.

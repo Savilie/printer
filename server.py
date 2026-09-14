@@ -11,12 +11,24 @@ import win32ui
 from typing import Literal, Optional
 from io import BytesIO
 from fastapi.responses import StreamingResponse
-from reportlab.lib.units import mm
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas as pdfcanvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-import qrcode
+
+# PDF-этикетка (reportlab). Импортируем мягко: если пакета нет, агент всё равно
+# запускается и печатает, а /print/pdf отдаёт понятную ошибку вместо падения на старте.
+try:
+    from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas as pdfcanvas
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import qrcode
+    _PDF_READY = True
+    _PDF_ERR = ""
+except Exception as _pdf_import_error:  # pragma: no cover
+    _PDF_READY = False
+    _PDF_ERR = str(_pdf_import_error)
+    mm = None
+    ImageReader = pdfcanvas = pdfmetrics = TTFont = None  # type: ignore
+    qrcode = None  # type: ignore
 
 
 app = FastAPI(title="Принтер-сервер для ПВЗ", version="1.1")
@@ -54,14 +66,16 @@ def _register_pdf_font() -> str:
     return "Helvetica"  # запасной вариант — но БЕЗ кириллицы
 
 
-_PDF_FONT = _register_pdf_font()
+_PDF_FONT = _register_pdf_font() if _PDF_READY else ""
 
-_QR_ECC_MAP = {
-    "L": qrcode.constants.ERROR_CORRECT_L,
-    "M": qrcode.constants.ERROR_CORRECT_M,
-    "Q": qrcode.constants.ERROR_CORRECT_Q,
-    "H": qrcode.constants.ERROR_CORRECT_H,
-}
+_QR_ECC_MAP = {}
+if _PDF_READY:
+    _QR_ECC_MAP = {
+        "L": qrcode.constants.ERROR_CORRECT_L,
+        "M": qrcode.constants.ERROR_CORRECT_M,
+        "Q": qrcode.constants.ERROR_CORRECT_Q,
+        "H": qrcode.constants.ERROR_CORRECT_H,
+    }
 
 
 def _make_qr_image(data: str, ecc: str = "M") -> BytesIO:
@@ -705,6 +719,10 @@ def print_label_pdf(req: PrintRequest):
     qr_text = req.qr or req.id or ""
     if not qr_text:
         raise HTTPException(400, "Нет данных для печати (qr/id)")
+    if not _PDF_READY:
+        # библиотеки PDF не установлены — печать (RAW) при этом продолжает работать
+        raise HTTPException(503, "PDF недоступен: не установлены библиотеки "
+                                 f"({_PDF_ERR}). Скачайте программу печати заново со страницы «Печать».")
 
     title = (req.title or "").replace("*-", "").replace("ID:", "")
     subtitle = req.subtitle or ""

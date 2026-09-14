@@ -2,3 +2,6 @@ fastapi
 uvicorn
 pywin32
 pydantic
+qrcode
+pillow
+reportlab
