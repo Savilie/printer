@@ -31,7 +31,7 @@ except Exception as _pdf_import_error:  # pragma: no cover
     qrcode = None  # type: ignore
 
 
-app = FastAPI(title="Принтер-сервер для ПВЗ", version="1.1")
+app = FastAPI(title="Принтер-сервер для ПВЗ", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -186,6 +186,12 @@ class PrintRequest(BaseModel):
     printer: Optional[Literal["tlp100", "lp58", "both"]] = "both"
     printer_name: Optional[str] = None  # явное имя принтера (если нужно)
     copies: Optional[int] = 1
+    # этикетка посылки WB/Ozon (kind="parcel"): ячейка крупно + ПВЗ + клиент + заказ
+    kind: Optional[str] = "goods"
+    cell: Optional[str] = None
+    dest: Optional[str] = None
+    client: Optional[str] = None
+    order_no: Optional[str] = None
 
 
 def _all_printers() -> list:
@@ -582,6 +588,52 @@ def build_lp58(qr_text: str, title: str = "", subtitle: str = "", lines=None) ->
     return ("\r\n".join(lines_cmd) + "\r\n").encode("cp866", errors="replace")
 
 
+def build_tlp100_parcel(qr_text: str, dest: str = "", client: str = "",
+                        order_no: str = "", cell: str = "") -> bytes:
+    """Этикетка ПОСЫЛКИ Wildberries/Ozon (приёмка по коду клиента).
+
+    Раскладка (400x300 точек, как TLP100):
+      b20,15,...,s11  -> QR модуль 11 точек = 28.9 мм (меньше обычного, чтобы влез текст)
+      A262,15,1,4,... -> НОМЕР ЯЧЕЙКИ крупно (font 4: знак 24 точки = 3 мм)
+      A306/A330/A354,15,1,2,.. -> ПВЗ выдачи / код+ФИО клиента / № заказа
+    Все строки читаются ВНИЗ (rotation 1), как на остальных этикетках.
+    Координаты должны совпадать с PARCEL_GEOMETRY в backend/warehouse/label_image.py.
+    """
+    limit = 23          # сколько знаков влезает по высоте при font 2 (шаг 12 точек)
+    rows = []
+
+    # номер ячейки — крупно
+    cell_text = str(cell or "").strip()
+    if cell_text:
+        rows.append(f'A262,15,1,4,1,1,N,"{_epl_escape(cell_text[:6])}"')
+
+    # три колонки: ПВЗ выдачи / код+ФИО / № заказа
+    columns = [(306, str(dest or "")), (330, str(client or "")), (354, str(order_no or ""))]
+    for x, text in columns:
+        t = str(text or "").strip()
+        if not t:
+            continue
+        font = 2 if len(t) <= limit else 1     # длинную строку печатаем мелким шрифтом
+        rows.append(f'A{x},15,1,{font},1,1,N,"{_epl_escape(t[:limit * 2])}"')
+
+    epl = ["N", "q400", "Q300,24",
+           f'b20,15,Q,m2,s11,eL,"{_epl_escape(qr_text)}"']
+    epl.extend(rows)
+    epl.append("P1")
+    return ("\r\n".join(epl) + "\r\n").encode("cp1251")
+
+
+def print_tlp100_parcel(qr_text: str, dest: str = "", client: str = "", order_no: str = "",
+                        cell: str = "", printer_name: str = "MPRINT Terra Nova TLP100",
+                        copies: int = 1) -> bool:
+    ok = True
+    for _ in range(max(1, copies)):
+        if not _raw_printer(printer_name, build_tlp100_parcel(qr_text, dest, client, order_no, cell)):
+            ok = False
+    print(f"📨 TLP100 [{printer_name}] ×{copies} (посылка): {qr_text} ячейка {cell}")
+    return ok
+
+
 def print_tlp100(qr_text: str, title: str = "", subtitle: str = "", printer_name: str = "MPRINT Terra Nova TLP100", copies: int = 1, lines=None) -> bool:
     ok = True
     for _ in range(max(1, copies)):
@@ -664,6 +716,17 @@ def print_label(req: PrintRequest):
     subtitle = req.subtitle or ""
     lines = req.lines or None
 
+    # Этикетка посылки WB/Ozon: своя раскладка (ячейка крупно + ПВЗ + клиент + заказ)
+    is_parcel = str(req.kind or "goods").strip().lower() == "parcel"
+
+    def _print_tlp(name: str) -> bool:
+        if is_parcel:
+            return print_tlp100_parcel(qr_text, req.dest or "", req.client or "",
+                                       req.order_no or "", req.cell or "",
+                                       printer_name=name, copies=req.copies or 1)
+        return print_tlp100(qr_text, title, subtitle, printer_name=name,
+                            copies=req.copies or 1, lines=lines)
+
     results = {}
     explicit = (req.printer_name or "").strip()
     ignored_explicit = ""
@@ -680,8 +743,7 @@ def print_label(req: PrintRequest):
         _save_pref(kind, explicit)
         if kind == "tlp100":
             tlp_name, lp_name = explicit, ""
-            results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=explicit,
-                                             copies=req.copies or 1, lines=lines)
+            results["tlp100"] = _print_tlp(explicit)
         else:
             tlp_name, lp_name = "", explicit
             results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=explicit,
@@ -690,7 +752,7 @@ def print_label(req: PrintRequest):
         tlp_name = resolve_printer("tlp100")
         lp_name = resolve_printer("lp58")
         if req.printer in ("tlp100", "both") and tlp_name:
-            results["tlp100"] = print_tlp100(qr_text, title, subtitle, printer_name=tlp_name, copies=req.copies or 1, lines=lines)
+            results["tlp100"] = _print_tlp(tlp_name)
         if req.printer in ("lp58", "both") and lp_name:
             results["lp58"] = print_lp58(qr_text, title, subtitle, printer_name=lp_name, copies=req.copies or 1, lines=lines)
     if not results:
